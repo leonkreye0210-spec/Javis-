@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis</title>
+<style>
+:root{--bg:#f4f6fa;--fg:#10141c;--mut:#6b7280;--card:#fff;--acc:#2563eb;--acc2:#06b6d4;--me:#dbeafe;--bd:#e5e7eb;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b0f17;--fg:#e8edf6;--mut:#93a0b5;--card:#151b27;--acc:#38bdf8;--acc2:#22d3ee;--me:#16324a;--bd:#232c3c}}
+:root[data-theme="dark"]{--bg:#0b0f17;--fg:#e8edf6;--mut:#93a0b5;--card:#151b27;--acc:#38bdf8;--acc2:#22d3ee;--me:#16324a;--bd:#232c3c}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column}
+header{padding:14px 18px;display:flex;align-items:center;justify-content:space-between}
+h1{font-size:18px;letter-spacing:.3em;margin:0;font-weight:600}
+label{font-size:13px;color:var(--mut);display:flex;gap:6px;align-items:center}
+#log{flex:1;overflow-y:auto;padding:8px 16px;display:flex;flex-direction:column;gap:10px}
+.m{max-width:85%;padding:10px 14px;border-radius:16px;line-height:1.4;font-size:15px;background:var(--card);border:1px solid var(--bd);white-space:pre-wrap}
+.m.me{align-self:flex-end;background:var(--me)}
+.hint{color:var(--mut);text-align:center;font-size:14px;margin:auto;padding:20px}
+footer{padding:12px 16px 20px;display:flex;flex-direction:column;align-items:center;gap:10px}
+#st{font-size:13px;color:var(--mut);min-height:18px}
+#mic{width:84px;height:84px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:34px;background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 4px 18px rgba(37,99,235,.35)}
+#mic.on{animation:p 1.2s infinite}
+@keyframes p{0%,100%{box-shadow:0 0 0 0 rgba(6,182,212,.5)}50%{box-shadow:0 0 0 18px rgba(6,182,212,0)}}
+#row{display:flex;gap:8px;width:100%;max-width:520px}
+#txt{flex:1;padding:10px 14px;border-radius:12px;border:1px solid var(--bd);background:var(--card);color:var(--fg);font-size:16px}
+#snd{padding:0 16px;border-radius:12px;border:0;background:var(--acc);color:#fff;font-size:15px}
+#mic i{display:block;width:6px;height:14px;margin:0 3px;border-radius:3px;background:#fff}
+#mic.talk i{animation:w .8s ease-in-out infinite}
+#mic i:nth-child(2){animation-delay:.12s}#mic i:nth-child(3){animation-delay:.24s}#mic i:nth-child(4){animation-delay:.36s}#mic i:nth-child(5){animation-delay:.48s}
+@keyframes w{0%,100%{height:12px}50%{height:46px}}
+footer{order:1;flex:1;justify-content:center;gap:20px;padding-bottom:12px}
+#log{order:2;flex:0 0 auto;max-height:34vh;padding-bottom:20px}
+#mic{order:1}#st{order:2;text-align:center}
+header,#log,footer{width:100%;max-width:760px;margin-left:auto;margin-right:auto}
+@media (min-width:700px){.m{font-size:19px;padding:12px 18px}#mic{width:110px;height:110px;font-size:44px}#st{font-size:16px}h1{font-size:22px}}
+:root:root:root{--bg:#000;--fg:#ffe1b0;--mut:#b9812f;--card:#120a02;--acc:#ff9a1f;--acc2:#ffd166;--me:#2b1705;--bd:#3d2610}
+#mic{background:none!important;box-shadow:none!important;animation:none!important;width:min(80vw,360px)!important;height:min(80vw,360px)!important}
+#mic i{display:none}
+#orb{width:100%;height:100%}
+h1{color:var(--acc2);font-weight:300}
+</style>
+</head>
+<body>
+<header><h1>JARVIS</h1></header>
+<div id="log"><div class="hint" id="hint">Jarvis hört automatisch zu. Sprich einfach los.</div></div>
+<footer>
+<div id="st"></div>
+<div id="mic" aria-hidden="true"><canvas id="orb"></canvas></div>
+</footer>
+<script>
+const $=id=>document.getElementById(id);
+const log=$("log"),st=$("st"),mic=$("mic");
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const SYS="Du bist Jarvis, ein persönlicher Sprachassistent. Antworte auf Deutsch, locker und höflich, in höchstens 2 kurzen Sätzen, ohne Markdown, Listen oder Emojis, weil deine Antwort vorgelesen wird. Nutze die Websuche für Aktuelles. Wenn dir ein Kamerabild mitgeschickt wird, beschreibe knapp, was du siehst, und beantworte die Frage dazu.";
+let hist=[],sample=null,rec=null,listening=false,busy=false,ctl=null,active=false;
+
+const TOKEN=localStorage.getItem("jt")||(()=>{const t=prompt("Zugangscode:")||"";localStorage.setItem("jt",t);return t})();
+sample=true;
+
+function add(t,me){const h=$("hint");if(h)h.remove();const d=document.createElement("div");d.className="m"+(me?" me":"");d.textContent=t;log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
+
+function speak(t){return new Promise(res=>{
+  if(!("speechSynthesis" in window)){res();return}
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(t);u.lang="de-DE";u.rate=.95;
+  const vs=speechSynthesis.getVoices().filter(v=>v.lang&&v.lang.startsWith("de"));
+  const male=/markus|martin|yannick|stefan|hans|male|männlich/i;
+  const v=vs.find(v=>male.test(v.name))||vs[0];if(v)u.voice=v;u.pitch=v&&male.test(v.name)?.8:1;
+  u.onstart=()=>mic.classList.add("talk");u.onend=u.onerror=()=>{mic.classList.remove("talk");res()};speechSynthesis.speak(u)})}
+
+const SEE=/\b(schau|schaue|sieh|siehst|guck|kamera|foto|betracht|erkenn|lies vor|was ist das|was ist hier)/i;
+let cam=null,camT=0;
+async function snap(){
+  try{
+    if(!cam){const v=document.createElement("video");v.setAttribute("playsinline","");v.muted=true;
+      v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false});
+      await v.play();await new Promise(r=>setTimeout(r,600));cam=v}
+    const s=Math.min(1,1024/Math.max(cam.videoWidth,cam.videoHeight)),c=document.createElement("canvas");
+    c.width=Math.round(cam.videoWidth*s);c.height=Math.round(cam.videoHeight*s);
+    c.getContext("2d").drawImage(cam,0,0,c.width,c.height);
+    const b=await new Promise(r=>c.toBlob(r,"image/jpeg",.82));
+    clearTimeout(camT);camT=setTimeout(()=>{if(cam){cam.srcObject.getTracks().forEach(t=>t.stop());cam=null}},30000);
+    return b;
+  }catch(e){return null}}
+
+async function ask(text){
+  if(!sample||busy)return;busy=true;
+  add(text,true);hist.push({role:"user",content:text});
+  const out=add("…",false);st.textContent="Jarvis denkt nach …";
+  const msgs=hist.slice(-12).map((m,i)=>i===0&&m.role==="user"?{role:"user",content:SYS+"\n\n"+m.content}:m);
+  if(msgs[0].role!=="user")msgs.shift();
+  try{
+    ctl=new AbortController();
+    let img=null;
+    if(SEE.test(text)){st.textContent="Ich schaue hin …";img=await snap();
+      if(!img)msgs[msgs.length-1]={role:"user",content:text+" (Hinweis: Die Kamera ist nicht verfügbar, sag das kurz.)"}}
+    const b64=img?await new Promise(res=>{const f=new FileReader();f.onload=()=>res(f.result.split(",")[1]);f.readAsDataURL(img)}):null;
+    const resp=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json","x-token":TOKEN},signal:ctl.signal,body:JSON.stringify({messages:msgs,image:b64,now:new Date().toLocaleString("de-DE",{dateStyle:"full",timeStyle:"short"})})});
+    if(resp.status===401){localStorage.removeItem("jt");throw new Error("Zugangscode falsch, bitte Seite neu laden.")}
+    if(!resp.ok)throw new Error("Server "+resp.status);
+    const r=await resp.json();
+    const a=(r.text||"").trim()||"Dazu fällt mir nichts ein.";
+    out.textContent=a;hist.push({role:"assistant",content:a});
+    st.textContent="Jarvis spricht …";await speak(a);
+  }catch(e){
+    out.textContent="Fehler: "+(e&&e.message?e.message:"unbekannt");hist.pop();
+  }
+  busy=false;st.textContent="";
+  if(active&&!listening)listen();
+}
+
+function listen(){
+  if(!SR){st.textContent="Spracherkennung wird hier nicht unterstützt. Bitte Chrome oder Safari nutzen.";return}
+  if(listening){rec&&rec.stop();return}
+  speechSynthesis.cancel();
+  rec=new SR();rec.lang="de-DE";rec.interimResults=true;rec.maxAlternatives=1;
+  let fin="";
+  rec.onstart=()=>{listening=true;mic.classList.add("on");st.textContent="Ich höre zu …"};
+  rec.onresult=e=>{let t="";for(const r of e.results)t+=r[0].transcript;fin=t;st.textContent=t};
+  rec.onerror=e=>{if(e.error==="not-allowed"){active=false;mic.classList.remove("on");st.textContent="Mikrofon-Zugriff wurde nicht erlaubt."}};
+  rec.onend=()=>{listening=false;
+    if(!active){mic.classList.remove("on");return}
+    if(fin.trim())ask(fin.trim());else setTimeout(()=>{if(active&&!listening&&!busy)listen()},300)};
+  try{rec.start()}catch(e){}
+}
+
+const cv=$("orb"),cx=cv.getContext("2d");
+let W=0,T=0,lv=0;
+function fit(){const r=cv.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);W=r.width;cv.width=cv.height=Math.round(W*d);cx.setTransform(d,0,0,d,0,0)}
+fit();addEventListener("resize",fit);
+const P=[];for(let i=0;i<520;i++){const ring=[.93,.8,.62,.4,.22][i%5];P.push({a:Math.random()*6.283,r:ring+(Math.random()-.5)*.06,s:(Math.random()*.6+.2)*(i%2?1:-1)*(1.1-ring*.5),l:Math.random()*.05+.01,w:Math.random()*1.6+.4})}
+function frame(t){
+  if(!W)fit();
+  T=t/1000;const talk=mic.classList.contains("talk");
+  const target=talk?1:busy?.45:listening?.25:.12;lv+=(target-lv)*.06;
+  const c=W/2;cx.clearRect(0,0,W,W);cx.globalCompositeOperation="lighter";
+  const pulse=1+lv*.25*Math.sin(T*(talk?9:2.2))+(talk?lv*.12*Math.sin(T*23):0);
+  const g=cx.createRadialGradient(c,c,0,c,c,c*.5*pulse);
+  g.addColorStop(0,"rgba(255,226,140,.95)");g.addColorStop(.3,"rgba(255,150,30,.5)");g.addColorStop(1,"rgba(255,110,0,0)");
+  cx.fillStyle=g;cx.beginPath();cx.arc(c,c,c*.5*pulse,0,6.283);cx.fill();
+  cx.lineWidth=1;[.93,.62,.4].forEach((r,i)=>{const o=T*.1*(i%2?1:-1)+i;cx.strokeStyle="rgba(255,160,50,"+(.25+lv*.3)+")";cx.beginPath();cx.arc(c,c,c*r*(1+lv*.015*Math.sin(T*3+i)),o,o+4.2);cx.stroke()});
+  for(const p of P){
+    p.a+=p.s*.004*(1+lv*3);
+    const r=c*p.r*(1+lv*.08*Math.sin(T*6+p.a*4));
+    const x=c+Math.cos(p.a)*r,y=c+Math.sin(p.a)*r,len=c*p.l*(1+lv*1.5);
+    cx.strokeStyle="rgba(255,"+(150+((p.w*40)|0))+",40,"+(.35+Math.random()*.4*(.5+lv))+")";
+    cx.lineWidth=p.w;cx.beginPath();cx.moveTo(x,y);
+    cx.lineTo(x+Math.cos(p.a+1.57)*len,y+Math.sin(p.a+1.57)*len);cx.stroke()}
+  requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+active=true;
+window.addEventListener("load",()=>{setTimeout(listen,400);setTimeout(()=>{if(!listening)st.textContent="Tippe einmal irgendwo auf den Bildschirm."},2500)});
+document.addEventListener("pointerdown",()=>{if(!window.__u){window.__u=1;try{speechSynthesis.speak(new SpeechSynthesisUtterance(""))}catch(e){}}if(!listening&&!busy){active=true;listen()}});
+if(!SR)st.textContent="Keine Spracherkennung in diesem Browser. Bitte Chrome oder Safari nutzen.";
+</script>
+</body>
+</html>
