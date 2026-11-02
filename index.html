@@ -44,6 +44,7 @@ html{background:#000}
 #mic i{display:none}
 #orb{width:100%;height:100%}
 h1{color:var(--acc2);font-weight:300}
+#cam{position:fixed;right:14px;bottom:calc(14px + env(safe-area-inset-bottom,0px));width:92px;height:92px;border-radius:50%;object-fit:cover;border:1px solid var(--acc);box-shadow:0 0 14px rgba(255,150,30,.45);z-index:5}
 </style>
 </head>
 <body>
@@ -57,35 +58,82 @@ h1{color:var(--acc2);font-weight:300}
 const $=id=>document.getElementById(id);
 const log=$("log"),st=$("st"),mic=$("mic");
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-const SYS="Du bist Jarvis, ein persönlicher Sprachassistent. Antworte auf Deutsch, locker und höflich, in höchstens 2 kurzen Sätzen, ohne Markdown, Listen oder Emojis, weil deine Antwort vorgelesen wird. Nutze die Websuche für Aktuelles. Wenn dir ein Kamerabild mitgeschickt wird, beschreibe knapp, was du siehst, und beantworte die Frage dazu.";
-let hist=[],sample=null,rec=null,listening=false,busy=false,ctl=null,active=false;
+const SEE=/\b(schau|schaue|sieh|siehst|guck|kamera|foto|betracht|erkenn|lies vor|was ist das|was ist hier)/i;
+const STOP=/\b(stopp|stop|sei still|genug|ruhe bitte)\b/i;
+const SYS="Du bist Jarvis, der Butler-KI-Assistent aus Iron Man: souverän, höflich, mit trockenem britischem Humor. Du sprichst den Nutzer mit „Sir“ an. Antworte auf Deutsch in höchstens 2 kurzen Sätzen, ohne Markdown, Listen oder Emojis, weil deine Antwort vorgelesen wird. Wenn ein Kamerabild dabei ist, beschreibe knapp, was du siehst. Aktionen löst du aus, indem du sie ans Ende deiner Antwort als Befehl in doppelten eckigen Klammern schreibst, ohne die Zeichen . ! ? darin: [[MERKEN: Fakt über den Nutzer]] wenn er etwas dauerhaft gemerkt haben will oder etwas Persönliches nennt, [[VERGESSEN: Stichwort]], [[NOTIZ: Text]] für Notizen, [[ERINNERUNG: Sekunden bis dahin | Text]] für Timer und Erinnerungen (rechne Uhrzeiten anhand des aktuellen Datums in Sekunden um), [[TIMER_LOESCHEN]] löscht alle Timer. Bestätige Aktionen kurz im Text.";
+let hist=[],sample=null,rec=null,listening=false,busy=false,ctl=null,active=false,speaking=false,q=[],stp=null,greeted=false,greetQ=false,spoken=0,cam=null,camT=0,wl=null,tms=[];
+const ls=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}};
+const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
 
 const TOKEN=localStorage.getItem("jt")||(()=>{const t=prompt("Zugangscode:")||"";localStorage.setItem("jt",t);return t})();
 sample=true;
 
+async function think(msgs,img,onText,signal){
+  const b64=img?await new Promise(res=>{const f=new FileReader();f.onload=()=>res(f.result.split(",")[1]);f.readAsDataURL(img)}):null;
+  const resp=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json","x-token":TOKEN},signal,body:JSON.stringify({messages:msgs,image:b64,now:new Date().toLocaleString("de-DE",{dateStyle:"full",timeStyle:"short"})})});
+  if(resp.status===401){localStorage.removeItem("jt");throw new Error("Zugangscode falsch, bitte Seite neu laden.")}
+  if(!resp.ok)throw new Error("Server "+resp.status);
+  const r=await resp.json();onText(r.text||"");return r.text||"";
+}
+
+function ctx(){
+  const m=ls("j_mem",[]),n=ls("j_notes",[]).slice(-15),tm=ls("j_timers",[]);
+  let s=SYS+"\nAktuell: "+new Date().toLocaleString("de-DE",{dateStyle:"full",timeStyle:"short"})+".";
+  if(m.length)s+="\nDas weißt du über den Nutzer: "+m.join("; ")+".";
+  if(n.length)s+="\nNotizen des Nutzers: "+n.map(x=>x.t).join(" | ")+".";
+  if(tm.length)s+="\nLaufende Timer: "+tm.map(t=>Math.max(0,Math.round((t.due-Date.now())/1000))+" s: "+t.t).join(", ")+".";
+  return s}
+
+function act(text){
+  return text.replace(/\[\[([A-ZÄÖÜ_]+)(?::([^\]]*))?\]\]/g,(_,k,v)=>{v=(v||"").trim();
+    if(k==="MERKEN"&&v){const m=ls("j_mem",[]);if(!m.includes(v)){m.push(v);sv("j_mem",m.slice(-50))}}
+    else if(k==="VERGESSEN"&&v){sv("j_mem",ls("j_mem",[]).filter(x=>!x.toLowerCase().includes(v.toLowerCase())))}
+    else if(k==="NOTIZ"&&v){const n=ls("j_notes",[]);n.push({t:v,d:Date.now()});sv("j_notes",n.slice(-100))}
+    else if(k==="ERINNERUNG"){const p=v.split("|"),sec=parseInt(p.shift(),10);if(sec>0){const t=ls("j_timers",[]);t.push({due:Date.now()+sec*1000,t:p.join("|").trim()||"Timer"});sv("j_timers",t);sched()}}
+    else if(k==="TIMER_LOESCHEN"){sv("j_timers",[]);sched()}
+    return ""}).replace(/\s+/g," ").trim()}
+
 function add(t,me){const h=$("hint");if(h)h.remove();const d=document.createElement("div");d.className="m"+(me?" me":"");d.textContent=t;log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
 
-function speak(t){return new Promise(res=>{
-  if(!("speechSynthesis" in window)){res();return}
-  speechSynthesis.cancel();
-  const u=new SpeechSynthesisUtterance(t);u.lang="de-DE";u.rate=.95;
-  const vs=speechSynthesis.getVoices().filter(v=>v.lang&&v.lang.startsWith("de"));
-  const male=/markus|martin|yannick|stefan|hans|male|männlich/i;
-  const v=vs.find(v=>male.test(v.name))||vs[0];if(v)u.voice=v;u.pitch=v&&male.test(v.name)?.8:1;
-  u.onstart=()=>mic.classList.add("talk");u.onend=u.onerror=()=>{mic.classList.remove("talk");res()};speechSynthesis.speak(u)})}
+function voice(){const vs=speechSynthesis.getVoices().filter(v=>v.lang&&v.lang.startsWith("de"));
+  const male=/markus|martin|yannick|stefan|hans|male|männlich/i;const v=vs.find(v=>male.test(v.name))||vs[0];return{v,m:!!(v&&male.test(v.name))}}
+function say(t,g){if(!t||!("speechSynthesis" in window))return;q.push({t,g});pump()}
+function pump(){
+  if(speaking||!q.length)return;
+  const it=q.shift(),u=new SpeechSynthesisUtterance(it.t),{v,m}=voice();
+  u.lang="de-DE";u.rate=.95;u.pitch=m?.8:1;if(v)u.voice=v;
+  speaking=true;mic.classList.add("talk");
+  try{if(rec)rec.abort()}catch(e){}
+  guard(true);
+  u.onstart=()=>{if(it.g)greeted=true};
+  u.onend=u.onerror=()=>{if(it.g&&!greeted)greetQ=false;speaking=false;if(q.length)pump();else{mic.classList.remove("talk");guard(false)}};
+  speechSynthesis.speak(u)}
+function drain(){return new Promise(r=>{const i=setInterval(()=>{if(!speaking&&!q.length){clearInterval(i);r()}},120)})}
+function halt(){q=[];try{speechSynthesis.cancel()}catch(e){}if(busy&&ctl)ctl.abort()}
+function guard(on){
+  if(!SR)return;
+  if(!on){const s=stp;stp=null;try{s&&s.abort()}catch(e){}return}
+  if(stp)return;
+  try{const s=new SR();s.lang="de-DE";s.continuous=true;s.interimResults=true;
+    s.onresult=e=>{let t="";for(const r of e.results)t+=r[0].transcript;if(STOP.test(t))halt()};
+    s.onend=()=>{if(stp===s&&speaking)try{s.start()}catch(e){}};
+    s.onerror=()=>{};stp=s;s.start()}catch(e){stp=null}}
 
-const SEE=/\b(schau|schaue|sieh|siehst|guck|kamera|foto|betracht|erkenn|lies vor|was ist das|was ist hier)/i;
-let cam=null,camT=0;
+function feed(t,final){
+  const c=t.indexOf("[["),a=c<0?t:t.slice(0,c);let m;
+  while((m=/^[\s\S]*?[.!?…]["”“)]*(?=\s)/.exec(a.slice(spoken)))){say(m[0].trim());spoken+=m[0].length}
+  if(final||c>=0){const r=a.slice(spoken).trim();if(r)say(r);spoken=a.length}}
+
 async function snap(){
   try{
-    if(!cam){const v=document.createElement("video");v.setAttribute("playsinline","");v.muted=true;
+    if(!cam){const v=document.createElement("video");v.id="cam";v.setAttribute("playsinline","");v.muted=true;
       v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false});
-      await v.play();await new Promise(r=>setTimeout(r,600));cam=v}
+      document.body.appendChild(v);await v.play();await new Promise(r=>setTimeout(r,600));cam=v}
     const s=Math.min(1,1024/Math.max(cam.videoWidth,cam.videoHeight)),c=document.createElement("canvas");
     c.width=Math.round(cam.videoWidth*s);c.height=Math.round(cam.videoHeight*s);
     c.getContext("2d").drawImage(cam,0,0,c.width,c.height);
     const b=await new Promise(r=>c.toBlob(r,"image/jpeg",.82));
-    clearTimeout(camT);camT=setTimeout(()=>{if(cam){cam.srcObject.getTracks().forEach(t=>t.stop());cam=null}},30000);
+    clearTimeout(camT);camT=setTimeout(()=>{if(cam){cam.srcObject.getTracks().forEach(t=>t.stop());cam.remove();cam=null}},30000);
     return b;
   }catch(e){return null}}
 
@@ -93,42 +141,45 @@ async function ask(text){
   if(!sample||busy)return;busy=true;
   add(text,true);hist.push({role:"user",content:text});
   const out=add("…",false);st.textContent="Jarvis denkt nach …";
-  const msgs=hist.slice(-12).map((m,i)=>i===0&&m.role==="user"?{role:"user",content:SYS+"\n\n"+m.content}:m);
-  if(msgs[0].role!=="user")msgs.shift();
+  let msgs=hist.slice(-12);if(msgs[0].role!=="user")msgs=msgs.slice(1);
+  msgs=msgs.map((m,i)=>i===0?{role:"user",content:ctx()+"\n\nNutzer: "+m.content}:m);
   try{
-    ctl=new AbortController();
+    ctl=new AbortController();spoken=0;
     let img=null;
     if(SEE.test(text)){st.textContent="Ich schaue hin …";img=await snap();
-      if(!img)msgs[msgs.length-1]={role:"user",content:text+" (Hinweis: Die Kamera ist nicht verfügbar, sag das kurz.)"}}
-    const b64=img?await new Promise(res=>{const f=new FileReader();f.onload=()=>res(f.result.split(",")[1]);f.readAsDataURL(img)}):null;
-    const resp=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json","x-token":TOKEN},signal:ctl.signal,body:JSON.stringify({messages:msgs,image:b64,now:new Date().toLocaleString("de-DE",{dateStyle:"full",timeStyle:"short"})})});
-    if(resp.status===401){localStorage.removeItem("jt");throw new Error("Zugangscode falsch, bitte Seite neu laden.")}
-    if(!resp.ok)throw new Error("Server "+resp.status);
-    const r=await resp.json();
-    const a=(r.text||"").trim()||"Dazu fällt mir nichts ein.";
+      if(!img){const l=msgs[msgs.length-1];msgs[msgs.length-1]={role:"user",content:l.content+" (Hinweis: Die Kamera ist nicht verfügbar, sag das kurz.)"}}}
+    const full=await think(msgs,img,t=>{out.textContent=t.replace(/\[\[[\s\S]*$/,"").trim()||"…";feed(t,false)},ctl.signal);
+    feed(full,true);
+    let a=act(full);if(!a){a="Wie Sie wünschen, Sir.";say(a)}
     out.textContent=a;hist.push({role:"assistant",content:a});
-    st.textContent="Jarvis spricht …";await speak(a);
+    st.textContent="Jarvis spricht …";await drain();
   }catch(e){
-    out.textContent="Fehler: "+(e&&e.message?e.message:"unbekannt");hist.pop();
+    out.textContent=(ctl&&ctl.signal.aborted)?"(unterbrochen)":"Fehler: "+(e&&e.message?e.message:"unbekannt");
+    hist.pop();
   }
   busy=false;st.textContent="";
-  if(active&&!listening)listen();
 }
 
 function listen(){
-  if(!SR){st.textContent="Spracherkennung wird hier nicht unterstützt. Bitte Chrome oder Safari nutzen.";return}
-  if(listening){rec&&rec.stop();return}
-  speechSynthesis.cancel();
+  if(!SR){st.textContent="Spracherkennung wird hier nicht unterstützt. Bitte Chrome oder Safari nutzen.";active=false;return}
+  if(listening||speaking)return;
   rec=new SR();rec.lang="de-DE";rec.interimResults=true;rec.maxAlternatives=1;
   let fin="";
-  rec.onstart=()=>{listening=true;mic.classList.add("on");st.textContent="Ich höre zu …"};
-  rec.onresult=e=>{let t="";for(const r of e.results)t+=r[0].transcript;fin=t;st.textContent=t};
-  rec.onerror=e=>{if(e.error==="not-allowed"){active=false;mic.classList.remove("on");st.textContent="Mikrofon-Zugriff wurde nicht erlaubt."}};
-  rec.onend=()=>{listening=false;
-    if(!active){mic.classList.remove("on");return}
-    if(fin.trim())ask(fin.trim());else setTimeout(()=>{if(active&&!listening&&!busy)listen()},300)};
+  rec.onstart=()=>{listening=true;st.textContent="Ich höre zu …"};
+  rec.onresult=e=>{let t="";for(const r of e.results)t+=r[0].transcript;fin=t;if(!speaking)st.textContent=t};
+  rec.onerror=e=>{if(e.error==="not-allowed"||e.error==="service-not-allowed"){active=false;st.textContent="Mikrofon-Zugriff wurde nicht erlaubt. Tippe zum Erneuern."}};
+  rec.onend=()=>{listening=false;if(fin.trim()&&!speaking&&active)ask(fin.trim());else if(!speaking&&!busy)st.textContent=""};
   try{rec.start()}catch(e){}
 }
+
+function sched(){
+  tms.forEach(clearTimeout);tms=[];const now=Date.now(),keep=[];
+  for(const t of ls("j_timers",[])){if(t.due<=now+500)say("Sir, Ihre Erinnerung: "+t.t);else{keep.push(t);tms.push(setTimeout(sched,Math.min(t.due-now,2147000000)))}}
+  sv("j_timers",keep)}
+function greet(){if(greeted||greetQ)return;greetQ=true;const h=new Date().getHours();
+  say((h<5?"Noch wach":h<11?"Guten Morgen":h<18?"Guten Tag":"Guten Abend")+", Sir. Jarvis ist bereit. Was kann ich für Sie tun?",true)}
+async function keepAwake(){try{if("wakeLock" in navigator&&!wl){wl=await navigator.wakeLock.request("screen");wl.onrelease=()=>{wl=null}}}catch(e){}}
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)keepAwake()});
 
 const cv=$("orb"),cx=cv.getContext("2d");
 let W=0,T=0,lv=0;
@@ -154,9 +205,17 @@ function frame(t){
     cx.lineTo(x+Math.cos(p.a+1.57)*len,y+Math.sin(p.a+1.57)*len);cx.stroke()}
   requestAnimationFrame(frame)}
 requestAnimationFrame(frame);
+
 active=true;
-window.addEventListener("load",()=>{setTimeout(listen,400);setTimeout(()=>{if(!listening)st.textContent="Tippe einmal irgendwo auf den Bildschirm."},2500)});
-document.addEventListener("pointerdown",()=>{if(!window.__u){window.__u=1;try{speechSynthesis.speak(new SpeechSynthesisUtterance(""))}catch(e){}}if(!listening&&!busy){active=true;listen()}});
+window.addEventListener("load",()=>{sched();keepAwake();setTimeout(greet,500);
+  setTimeout(()=>{if(!listening&&!speaking)st.textContent="Tippe einmal irgendwo auf den Bildschirm."},2500)});
+setInterval(()=>{if(active&&!listening&&!busy&&!speaking&&!q.length)listen()},600);
+document.addEventListener("pointerdown",()=>{
+  if(!window.__u){window.__u=1;try{speechSynthesis.speak(new SpeechSynthesisUtterance(""))}catch(e){}}
+  keepAwake();
+  if(speaking){halt();return}
+  greet();
+  if(!speaking&&!listening&&!busy){active=true;listen()}});
 if(!SR)st.textContent="Keine Spracherkennung in diesem Browser. Bitte Chrome oder Safari nutzen.";
 </script>
 </body>
