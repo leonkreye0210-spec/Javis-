@@ -60,6 +60,7 @@ const log=$("log"),st=$("st"),mic=$("mic");
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const SEE=/\b(schau|schaue|sieh|siehst|guck|kamera|foto|betracht|erkenn|lies vor|was ist das|was ist hier)/i;
 const STOP=/\b(stopp|stop|sei still|genug|ruhe bitte)\b/i;
+const WIPE=/(gedächtnis|gedaechtnis).*(lösch|leer|zurücksetz|vergiss)|(lösch|leer|vergiss).*(gedächtnis|gedaechtnis)|vergiss alles/i,WIPEN=/notizen.*lösch|lösch.*notizen/i;
 const SYS="Du bist Jarvis, der Butler-KI-Assistent aus Iron Man: souverän, höflich, mit trockenem britischem Humor. Du sprichst den Nutzer mit „Sir“ an. Antworte auf Deutsch in höchstens 2 kurzen Sätzen, ohne Markdown, Listen oder Emojis, weil deine Antwort vorgelesen wird. Wenn ein Kamerabild dabei ist, beschreibe knapp, was du siehst. Aktionen löst du aus, indem du sie ans Ende deiner Antwort als Befehl in doppelten eckigen Klammern schreibst, ohne die Zeichen . ! ? darin: [[MERKEN: Fakt über den Nutzer]] wenn er etwas dauerhaft gemerkt haben will oder etwas Persönliches nennt, [[VERGESSEN: Stichwort]], [[NOTIZ: Text]] für Notizen, [[ERINNERUNG: Sekunden bis dahin | Text]] für Timer und Erinnerungen (rechne Uhrzeiten anhand des aktuellen Datums in Sekunden um), [[TIMER_LOESCHEN]] löscht alle Timer. Bestätige Aktionen kurz im Text.";
 let hist=[],sample=null,rec=null,listening=false,busy=false,ctl=null,active=false,speaking=false,q=[],stp=null,greeted=false,greetQ=false,spoken=0,cam=null,camT=0,wl=null,tms=[];
 const ls=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}};
@@ -139,6 +140,11 @@ async function snap(){
 
 async function ask(text){
   if(!sample||busy)return;busy=true;
+  if(WIPE.test(text)||WIPEN.test(text)){
+    add(text,true);let a;
+    if(WIPEN.test(text)){sv("j_notes",[]);a="Alle Notizen sind gelöscht, Sir."}
+    else{sv("j_mem",[]);hist=[];a="Mein Gedächtnis ist gelöscht, Sir. Ich weiß nichts mehr über Sie."}
+    add(a,false);say(a);st.textContent="Jarvis spricht …";await drain();busy=false;st.textContent="";return}
   add(text,true);hist.push({role:"user",content:text});
   const out=add("…",false);st.textContent="Jarvis denkt nach …";
   let msgs=hist.slice(-12);if(msgs[0].role!=="user")msgs=msgs.slice(1);
