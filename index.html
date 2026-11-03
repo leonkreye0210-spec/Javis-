@@ -61,7 +61,7 @@ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const SEE=/\b(schau|schaue|sieh|siehst|guck|kamera|foto|betracht|erkenn|lies vor|was ist das|was ist hier)/i;
 const STOP=/\b(stopp|stop|sei still|genug|ruhe bitte)\b/i;
 const WIPE=/(gedächtnis|gedaechtnis).*(lösch|leer|zurücksetz|vergiss)|(lösch|leer|vergiss).*(gedächtnis|gedaechtnis)|vergiss alles/i,WIPEN=/notizen.*lösch|lösch.*notizen/i;
-const SYS="Du bist Jarvis, der Butler-KI-Assistent aus Iron Man: souverän, höflich, mit trockenem britischem Humor. Du sprichst den Nutzer mit „Sir“ an. Antworte auf Deutsch in höchstens 2 kurzen Sätzen, ohne Markdown, Listen oder Emojis, weil deine Antwort vorgelesen wird. Wenn ein Kamerabild dabei ist, beschreibe knapp, was du siehst. Aktionen löst du aus, indem du sie ans Ende deiner Antwort als Befehl in doppelten eckigen Klammern schreibst, ohne die Zeichen . ! ? darin: [[MERKEN: Fakt über den Nutzer]] wenn er etwas dauerhaft gemerkt haben will oder etwas Persönliches nennt, [[VERGESSEN: Stichwort]], [[NOTIZ: Text]] für Notizen, [[ERINNERUNG: Sekunden bis dahin | Text]] für Timer und Erinnerungen (rechne Uhrzeiten anhand des aktuellen Datums in Sekunden um), [[TIMER_LOESCHEN]] löscht alle Timer. Bestätige Aktionen kurz im Text.";
+const SYS="Du bist Jarvis, der Butler-KI-Assistent aus Iron Man: souverän, höflich, mit trockenem britischem Humor. Du sprichst den Nutzer mit „Sir“ an. Antworte auf Deutsch in höchstens 2 kurzen Sätzen, ohne Markdown, Listen oder Emojis, weil deine Antwort vorgelesen wird. Wenn ein Kamerabild dabei ist, beschreibe knapp, was du siehst. Aktionen löst du aus, indem du sie ans Ende deiner Antwort als Befehl in doppelten eckigen Klammern schreibst, ohne die Zeichen . ! ? darin: [[MERKEN: Fakt über den Nutzer]] wenn er etwas dauerhaft gemerkt haben will oder etwas Persönliches nennt, [[VERGESSEN: Stichwort]], [[NOTIZ: Text]] für Notizen, [[ERINNERUNG: Sekunden bis dahin | Text]] für Timer und Erinnerungen (rechne Uhrzeiten anhand des aktuellen Datums in Sekunden um), [[TIMER_LOESCHEN]] löscht alle Timer. Bestätige Aktionen kurz im Text. Musik steuerst du über Spotify mit [[MUSIK: abspielen | Suchbegriff]] (Interpret oder Titel, zum Beispiel Queen Bohemian Rhapsody), [[MUSIK: pause]], [[MUSIK: weiter]], [[MUSIK: nächstes]], [[MUSIK: zurück]] und [[MUSIK: lautstärke | Zahl von 0 bis 100]].";
 let hist=[],sample=null,rec=null,listening=false,busy=false,ctl=null,active=false,speaking=false,q=[],stp=null,greeted=false,greetQ=false,spoken=0,cam=null,camT=0,wl=null,tms=[];
 const ls=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}};
 const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
@@ -91,6 +91,7 @@ function act(text){
     else if(k==="VERGESSEN"&&v){sv("j_mem",ls("j_mem",[]).filter(x=>!x.toLowerCase().includes(v.toLowerCase())))}
     else if(k==="NOTIZ"&&v){const n=ls("j_notes",[]);n.push({t:v,d:Date.now()});sv("j_notes",n.slice(-100))}
     else if(k==="ERINNERUNG"){const p=v.split("|"),sec=parseInt(p.shift(),10);if(sec>0){const t=ls("j_timers",[]);t.push({due:Date.now()+sec*1000,t:p.join("|").trim()||"Timer"});sv("j_timers",t);sched()}}
+    else if(k==="MUSIK"&&v){music(v)}
     else if(k==="TIMER_LOESCHEN"){sv("j_timers",[]);sched()}
     return ""}).replace(/\s+/g," ").trim()}
 
@@ -140,6 +141,7 @@ async function snap(){
 
 async function ask(text){
   if(!sample||busy)return;busy=true;
+  if(SPLOGIN.test(text)){add(text,true);const a="Ich leite Sie zu Spotify weiter, Sir.";add(a,false);say(a);await drain();busy=false;spLogin();return}
   if(WIPE.test(text)||WIPEN.test(text)){
     add(text,true);let a;
     if(WIPEN.test(text)){sv("j_notes",[]);a="Alle Notizen sind gelöscht, Sir."}
@@ -175,7 +177,9 @@ function listen(){
   rec.onresult=e=>{let t="";for(const r of e.results)t+=r[0].transcript;fin=t;if(!speaking)st.textContent=t};
   rec.onerror=e=>{if(e.error==="not-allowed"||e.error==="service-not-allowed"){active=false;st.textContent="Mikrofon-Zugriff wurde nicht erlaubt. Tippe zum Erneuern."}};
   rec.onend=()=>{listening=false;if(fin.trim()&&!speaking&&active)ask(fin.trim());else if(!speaking&&!busy)st.textContent=""};
-  try{rec.start()}catch(e){}
+  const me=rec;listening=true;me.onstart=()=>{me._ok=true;st.textContent="Ich höre zu …"};
+  setTimeout(()=>{if(rec===me&&listening&&!me._ok){listening=false;try{me.abort()}catch(e){}}},10000);
+  try{me.start()}catch(e){listening=false}
 }
 
 function sched(){
@@ -212,8 +216,57 @@ function frame(t){
   requestAnimationFrame(frame)}
 requestAnimationFrame(frame);
 
+const SPS="user-modify-playback-state user-read-playback-state";
+const spRedirect=()=>location.origin+location.pathname;
+const b64u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+async function spLogin(){
+  const cid=(localStorage.getItem("sp_cid")||prompt("Spotify Client ID:")||"").trim();
+  if(!cid)return;localStorage.setItem("sp_cid",cid);
+  const v=b64u(crypto.getRandomValues(new Uint8Array(48)));localStorage.setItem("sp_v",v);
+  const ch=b64u(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(v)));
+  location.href="https://accounts.spotify.com/authorize?"+new URLSearchParams({response_type:"code",client_id:cid,scope:SPS,redirect_uri:spRedirect(),code_challenge_method:"S256",code_challenge:ch});
+}
+async function spToken(body){
+  const r=await fetch("https://accounts.spotify.com/api/token",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:localStorage.getItem("sp_cid"),...body})});
+  if(!r.ok)throw new Error("token");
+  const d=await r.json(),o=ls("sp_tok",{});
+  sv("sp_tok",{a:d.access_token,r:d.refresh_token||o.r,e:Date.now()+d.expires_in*1000-60000});
+}
+async function spAuthCb(){
+  const c=new URLSearchParams(location.search).get("code");if(!c)return;
+  history.replaceState(null,"",location.pathname);
+  try{await spToken({grant_type:"authorization_code",code:c,redirect_uri:spRedirect(),code_verifier:localStorage.getItem("sp_v")});say("Spotify ist verbunden, Sir.")}
+  catch(e){say("Die Spotify-Anmeldung ist fehlgeschlagen, Sir.")}
+}
+async function sp(method,path,body){
+  let t=ls("sp_tok",null);if(!t)throw new Error("nologin");
+  if(Date.now()>t.e){await spToken({grant_type:"refresh_token",refresh_token:t.r});t=ls("sp_tok",null)}
+  return fetch("https://api.spotify.com/v1"+path,{method,headers:{authorization:"Bearer "+t.a,...(body?{"content-type":"application/json"}:{})},body:body?JSON.stringify(body):undefined});
+}
+async function music(v){
+  const parts=v.split("|"),k=parts.shift().trim().toLowerCase(),p=parts.join("|").trim();
+  const simple={pause:["PUT","/me/player/pause"],weiter:["PUT","/me/player/play"],"nächstes":["POST","/me/player/next"],"zurück":["POST","/me/player/previous"]};
+  try{
+    let res;
+    if(k==="abspielen"&&p){
+      const s=await(await sp("GET","/search?type=track,artist,playlist&limit=1&q="+encodeURIComponent(p))).json();
+      const ar=s.artists&&s.artists.items[0],tr=s.tracks&&s.tracks.items[0],pl=s.playlists&&s.playlists.items.find(x=>x);
+      const body=ar&&ar.name.toLowerCase()===p.toLowerCase()?{context_uri:ar.uri}:tr?{uris:[tr.uri]}:pl?{context_uri:pl.uri}:ar?{context_uri:ar.uri}:null;
+      if(!body){say("Dazu finde ich bei Spotify nichts, Sir.");return}
+      res=await sp("PUT","/me/player/play",body);
+    }else if(k==="lautstärke"){
+      res=await sp("PUT","/me/player/volume?volume_percent="+Math.max(0,Math.min(100,parseInt(p,10)||0)));
+    }else if(simple[k]){res=await sp(simple[k][0],simple[k][1])}
+    else return;
+    if(res.status===404)say("Ich finde kein aktives Spotify-Gerät, Sir. Öffnen Sie bitte die Spotify-App und starten Sie dort kurz ein Lied.");
+    else if(res.status===403)say("Dafür braucht es Spotify Premium, Sir.");
+    else if(!res.ok)say("Spotify meldet einen Fehler, Sir.");
+  }catch(e){say(e.message==="nologin"?"Spotify ist noch nicht verbunden, Sir. Sagen Sie: Verbinde Spotify.":"Das hat bei Spotify nicht geklappt, Sir.")}
+}
+const SPLOGIN=/spotify.*(verbind|anmeld|login)|(verbind|anmeld).*spotify/i;
+
 active=true;
-window.addEventListener("load",()=>{sched();keepAwake();setTimeout(greet,500);
+window.addEventListener("load",()=>{sched();spAuthCb();keepAwake();setTimeout(greet,500);
   setTimeout(()=>{if(!listening&&!speaking)st.textContent="Tippe einmal irgendwo auf den Bildschirm."},2500)});
 setInterval(()=>{if(active&&!listening&&!busy&&!speaking&&!q.length)listen()},600);
 document.addEventListener("pointerdown",()=>{

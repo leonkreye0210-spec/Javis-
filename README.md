@@ -22,3 +22,10 @@ Erwartete Antwort:
 
 ## Starten
 Die Seite von einem Server ausliefern, der `/api/chat` bereitstellt (HTTPS nötig für Mikrofon und Kamera).
+
+## Spotify (optional)
+1. Auf developer.spotify.com/dashboard eine App anlegen (Spotify Premium wird zum Steuern benötigt).
+2. Als Redirect URI exakt die Adresse eintragen, unter der Jarvis läuft, inklusive Schrägstrich am Ende (zum Beispiel https://jarvis.DEINNAME.workers.dev/).
+3. Jarvis öffnen und sagen: „Verbinde Spotify". Die Client ID einmal eingeben und bei Spotify bestätigen.
+4. Danach: „Spiel Queen", „Pause", „Weiter", „Nächstes Lied", „Lauter" oder „Lautstärke auf 40".
+Die Spotify-App muss auf einem Gerät geöffnet sein, auf dem die Musik laufen soll.
