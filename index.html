@@ -60,6 +60,8 @@ const log=$("log"),st=$("st"),mic=$("mic");
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const SEE=/\b(schau|schaue|sieh|siehst|guck|kamera|foto|betracht|erkenn|lies vor|was ist das|was ist hier)/i;
 const STOP=/\b(stopp|stop|sei still|genug|ruhe bitte)\b/i;
+const IOS=/iP(ad|hone|od)/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+const NOSTOP=IOS||/^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 const WIPE=/(gedächtnis|gedaechtnis).*(lösch|leer|zurücksetz|vergiss)|(lösch|leer|vergiss).*(gedächtnis|gedaechtnis)|vergiss alles/i,WIPEN=/notizen.*lösch|lösch.*notizen/i;
 const SYS="Du bist Jarvis, der Butler-KI-Assistent aus Iron Man: souverän, höflich, mit trockenem britischem Humor. Du sprichst den Nutzer mit „Sir“ an. Antworte auf Deutsch in höchstens 2 kurzen Sätzen, ohne Markdown, Listen oder Emojis, weil deine Antwort vorgelesen wird. Wenn ein Kamerabild dabei ist, beschreibe knapp, was du siehst. Aktionen löst du aus, indem du sie ans Ende deiner Antwort als Befehl in doppelten eckigen Klammern schreibst, ohne die Zeichen . ! ? darin: [[MERKEN: Fakt über den Nutzer]] wenn er etwas dauerhaft gemerkt haben will oder etwas Persönliches nennt, [[VERGESSEN: Stichwort]], [[NOTIZ: Text]] für Notizen, [[ERINNERUNG: Sekunden bis dahin | Text]] für Timer und Erinnerungen (rechne Uhrzeiten anhand des aktuellen Datums in Sekunden um), [[TIMER_LOESCHEN]] löscht alle Timer. Bestätige Aktionen kurz im Text. Musik steuerst du über Spotify mit [[MUSIK: abspielen | Suchbegriff]] (Interpret oder Titel, zum Beispiel Queen Bohemian Rhapsody), [[MUSIK: pause]], [[MUSIK: weiter]], [[MUSIK: nächstes]], [[MUSIK: zurück]] und [[MUSIK: lautstärke | Zahl von 0 bis 100]].";
 let hist=[],sample=null,rec=null,listening=false,busy=false,ctl=null,active=false,speaking=false,q=[],stp=null,greeted=false,greetQ=false,spoken=0,cam=null,camT=0,wl=null,tms=[];
@@ -107,17 +109,22 @@ function pump(){
   speaking=true;mic.classList.add("talk");
   try{if(rec)rec.abort()}catch(e){}
   guard(true);
-  u.onstart=()=>{if(it.g)greeted=true};
-  u.onend=u.onerror=()=>{if(it.g&&!greeted)greetQ=false;speaking=false;if(q.length)pump();else{mic.classList.remove("talk");guard(false)}};
-  speechSynthesis.speak(u)}
+  let fin=false,tm,ok=false;
+  const done=()=>{if(fin)return;fin=true;clearTimeout(tm);if(it.g&&!greeted)greetQ=false;speaking=false;if(q.length)pump();else{mic.classList.remove("talk");guard(false)}};
+  u.onstart=()=>{ok=true;if(it.g)greeted=true};
+  u.onend=u.onerror=done;
+  tm=setTimeout(()=>{try{speechSynthesis.cancel()}catch(e){}done()},Math.max(5000,it.t.length*140+3000));
+  window.__ut=u;
+  setTimeout(()=>{try{speechSynthesis.resume()}catch(e){}try{speechSynthesis.speak(u)}catch(e){done()}},IOS?300:0);
+  setTimeout(()=>{if(!ok&&!fin)st.textContent="Die Sprachausgabe startet nicht. Tippe einmal auf den Bildschirm."},3500)}
 function drain(){return new Promise(r=>{const i=setInterval(()=>{if(!speaking&&!q.length){clearInterval(i);r()}},120)})}
 function halt(){q=[];try{speechSynthesis.cancel()}catch(e){}if(busy&&ctl)ctl.abort()}
 function guard(on){
-  if(!SR)return;
+  if(!SR||NOSTOP)return;
   if(!on){const s=stp;stp=null;try{s&&s.abort()}catch(e){}return}
   if(stp)return;
   try{const s=new SR();s.lang="de-DE";s.continuous=true;s.interimResults=true;
-    s.onresult=e=>{let t="";for(const r of e.results)t+=r[0].transcript;if(STOP.test(t))halt()};
+    s.onresult=e=>{let t="";for(let i=0;i<e.results.length;i++)t+=e.results[i][0].transcript;if(STOP.test(t))halt()};
     s.onend=()=>{if(stp===s&&speaking)try{s.start()}catch(e){}};
     s.onerror=()=>{};stp=s;s.start()}catch(e){stp=null}}
 
@@ -152,7 +159,7 @@ async function ask(text){
   let msgs=hist.slice(-12);if(msgs[0].role!=="user")msgs=msgs.slice(1);
   msgs=msgs.map((m,i)=>i===0?{role:"user",content:ctx()+"\n\nNutzer: "+m.content}:m);
   try{
-    ctl=new AbortController();spoken=0;
+    ctl=new AbortController();ctl.to=setTimeout(()=>ctl.abort(),45000);spoken=0;
     let img=null;
     if(SEE.test(text)){st.textContent="Ich schaue hin …";img=await snap();
       if(!img){const l=msgs[msgs.length-1];msgs[msgs.length-1]={role:"user",content:l.content+" (Hinweis: Die Kamera ist nicht verfügbar, sag das kurz.)"}}}
@@ -165,7 +172,7 @@ async function ask(text){
     out.textContent=(ctl&&ctl.signal.aborted)?"(unterbrochen)":"Fehler: "+(e&&e.message?e.message:"unbekannt");
     hist.pop();
   }
-  busy=false;st.textContent="";
+  clearTimeout(ctl&&ctl.to);busy=false;st.textContent="";
 }
 
 function listen(){
@@ -174,9 +181,9 @@ function listen(){
   rec=new SR();rec.lang="de-DE";rec.interimResults=true;rec.maxAlternatives=1;
   let fin="";
   rec.onstart=()=>{listening=true;st.textContent="Ich höre zu …"};
-  rec.onresult=e=>{let t="";for(const r of e.results)t+=r[0].transcript;fin=t;if(!speaking)st.textContent=t};
-  rec.onerror=e=>{if(e.error==="not-allowed"||e.error==="service-not-allowed"){active=false;st.textContent="Mikrofon-Zugriff wurde nicht erlaubt. Tippe zum Erneuern."}};
-  rec.onend=()=>{listening=false;if(fin.trim()&&!speaking&&active)ask(fin.trim());else if(!speaking&&!busy)st.textContent=""};
+  rec.onresult=e=>{let t="";for(let i=0;i<e.results.length;i++)t+=e.results[i][0].transcript;fin=t;if(!speaking)st.textContent=t};
+  rec.onerror=e=>{if(e.error==="not-allowed"||e.error==="service-not-allowed"){active=false;st.textContent="Mikrofon-Zugriff wurde nicht erlaubt. Tippe zum Erneuern."}else if(e.error!=="no-speech"&&e.error!=="aborted")st.textContent="Mikrofon-Fehler: "+e.error};
+  rec.onend=()=>{listening=false;if(fin.trim()&&!speaking&&active)ask(fin.trim());else if(!speaking&&!busy&&!/^Mikrofon/.test(st.textContent))st.textContent=""};
   const me=rec;listening=true;me.onstart=()=>{me._ok=true;st.textContent="Ich höre zu …"};
   setTimeout(()=>{if(rec===me&&listening&&!me._ok){listening=false;try{me.abort()}catch(e){}}},10000);
   try{me.start()}catch(e){listening=false}
@@ -266,7 +273,7 @@ async function music(v){
 const SPLOGIN=/spotify.*(verbind|anmeld|login)|(verbind|anmeld).*spotify/i;
 
 active=true;
-window.addEventListener("load",()=>{sched();spAuthCb();keepAwake();setTimeout(greet,500);
+window.addEventListener("load",()=>{sched();spAuthCb();keepAwake();
   setTimeout(()=>{if(!listening&&!speaking)st.textContent="Tippe einmal irgendwo auf den Bildschirm."},2500)});
 setInterval(()=>{if(active&&!listening&&!busy&&!speaking&&!q.length)listen()},600);
 document.addEventListener("pointerdown",()=>{
